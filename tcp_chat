@@ -1,0 +1,401 @@
+####server.c
+```c
+#include <stdio.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/types.h> 
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <errno.h>
+#include <netinet/in.h>  //for INADDR_ANY
+
+#define MAX_CLIENT_NUM 10	/* 客户端最大连接数 */
+#define MAXLENGHT 1024		/* 最大缓存长度 */
+#define SERVER_PORT 5012	/* 服务器端的端口号 */
+#define LISTEN_MAX_NUM 5	/* 监听队列的最大值 */
+
+int main(void)
+{
+	int clientSocket = -1, listenSocket = -1;
+	int client[MAX_CLIENT_NUM];
+	char buf[MAXLENGHT] = {0};
+	fd_set allset, rset;
+	socklen_t clilen;
+	struct sockaddr_in cliaddr,  seraddr;
+	int i = -1, maxi = -1, maxfd = -1, ret = -1, reuse = -1, iReady = -1;
+	struct timeval tv;
+	
+	/* 创建TCP监听socket */
+	listenSocket = socket(AF_INET, SOCK_STREAM, 0);
+	if (-1 == listenSocket)
+	{
+		printf("create socket error: %s\n",strerror(errno));
+		return -1;
+	}
+	else
+	{
+		printf("listenSocket = %d\n", listenSocket);
+	}
+	
+	bzero(&seraddr, sizeof(seraddr));
+	seraddr.sin_family = AF_INET;
+	seraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	seraddr.sin_port = htons(SERVER_PORT);
+	
+	/* 设置端口重用 */
+	reuse = 1;
+	ret = setsockopt(listenSocket,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse)); 
+	if (0 > ret)
+	{
+		printf("setsockopt error: %s\n",strerror(errno));
+		return -1;
+	}
+	
+	/* 绑定IP和端口 */
+	ret = bind(listenSocket, (struct sockaddr *)&seraddr, sizeof(seraddr));
+	if (0 > ret)
+	{
+		printf("bind error: %s\n",strerror(errno));
+		return -1;
+	}
+	
+	/* 设置监听 */
+	ret = listen(listenSocket, LISTEN_MAX_NUM);
+	if (0 > ret)
+	{
+		printf("listen error: %s\n",strerror(errno));
+		return -1;
+	}
+	
+	/* 初始化 */
+	maxfd = listenSocket;
+	memset(buf, 0 ,sizeof(buf));
+	for (i = 0; i < MAX_CLIENT_NUM; i++)
+		client[i] = -1;
+	FD_ZERO(&allset);
+	FD_SET(listenSocket, &allset);
+	
+	/* set two seconds to timeout */
+	//tv.tv_sec = 2;
+	//tv.tv_usec = 0;
+	
+	for (;;)
+	{
+		//iReady = select(maxfd + 1, &allset, NULL, NULL, &tv);
+		//将allset进行赋值的好处是，当监听到客户端的连接，if (FD_ISSET(fd, &rset))不会马上执行，因为新的客户端还没设置给rset
+		rset = allset;
+		iReady = select(maxfd + 1, &rset, NULL, NULL, NULL);
+		if (0 > iReady)
+		{
+			printf("select error: %s, errno: %d\n",strerror(errno), errno);
+			return -1;
+		}
+		else if (0 == iReady) //限定时间内没有数据到来
+		{
+			printf("no data within two seconds.\n");
+			continue;
+		}
+		else
+		{
+			printf("iReady=%d\n", iReady);
+		}
+		
+		/* 客户端发起连接 */
+		if (FD_ISSET(listenSocket, &rset))
+		{
+			/* 接受来自客户端的连接 */
+			clilen = sizeof(cliaddr);
+			clientSocket = accept(listenSocket, (struct sockaddr *)&cliaddr, &clilen);
+			printf("clientSocket : %d\n", clientSocket);
+			if (-1 == clientSocket)
+			{
+				printf("accept error: %s\n",strerror(errno));
+				continue;
+			}
+			
+			/* 保存已连接客户端的socket */
+			for (i = 0; i < MAX_CLIENT_NUM; i++)
+			{
+				if (client[i] < 0)
+				{
+					client[i] = clientSocket;
+					break;
+				}
+			}
+			
+			FD_SET(clientSocket, &allset);
+			if (clientSocket > maxfd)
+				maxfd = clientSocket;
+			if (i > maxi)	// maxi表示当前连接的客户端数量
+				maxi = i;
+		}
+		
+		
+		/* 处理与客户端的通信 */
+		for (i = 0; i <= maxi; i++)
+		{
+			int fd = -1, n = -1;
+			if ((fd = client[i]) < 0)
+				continue;
+
+			/* FD_ISSET为true,只是表明fd在rset集合中有设置，不能说明fd有数据到来*/
+			if (FD_ISSET(fd, &rset))
+			{
+				for (;;)
+				{
+					//接受来自客户端的数据，当前是阻塞的
+					memset(buf, 0, sizeof(buf));
+					n = recv(fd, buf, sizeof(buf), 0);
+					if ( n < 0)
+					{
+						printf("recv error: %s\n",strerror(errno));
+						if(errno == EAGAIN)
+							continue;
+						else
+							break;;	
+					}
+					else if (n == 0) //客户端关闭了socket
+					{
+						printf("client close: %d\n", fd);
+						close(fd);
+						FD_CLR(fd, &allset);
+						client[i] = -1;
+						break;
+					}
+					
+					if (n != sizeof(buf)) //说明没有数据可读
+					{
+						printf("recv:%s\n", buf);
+						//将接受的数据都发送给连接的每个客户端
+						int j = 0, size = 0, fd2 = -1;
+						for (j = 0; j <= maxi; j++)
+						{
+							if ((fd2 = client[j]) < 0)
+								continue;
+								
+							char tmp[MAXLENGHT] = {0};
+							snprintf(tmp, sizeof(tmp), "%d say: %s", i, buf);	
+							size = send(fd2, tmp, strlen(tmp), 0);
+							//printf("send: %s, size: %d, n: %d, fd2:%d\n", buf, size, n, fd2);
+							if (size < 0)
+							{
+								printf("send error: %s\n",strerror(errno));
+								continue;
+							}		
+						}		
+						
+						break;
+					}
+					else
+					{
+						continue; //可能有数据，还要尝试再读取	
+					}
+				}
+			}					
+		}
+	}	
+}
+
+
+```
+####client.c
+```c
+#include <stdio.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/types.h> 
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>  //for INADDR_ANY
+#include <pthread.h>
+
+#define SERVER_PORT 5012	/* 服务器端的端口号 */
+#define MAX_LENGTH 1024     /* 缓存最大长度 */
+
+/* 表示是否需要发送数据给服务器端 
+ * 1表示接收到用户的输入信息，需要发送给服务器 
+ * 0表示接收服务端的消息 */
+static int g_iIsSend = 0;
+
+/* 发送缓冲区 */
+char sendBuf[MAX_LENGTH] = {0};
+
+/* 表示是否正在等待用户的输入
+ * 1正在等待用户的输入
+ * 0用户已输入完成
+ */
+static int g_iWait = 1;
+
+/* 线程处理函数 */
+void *recevie_user_input(void *arg);
+
+int main(void)
+{
+	int sockfd = -1, ret = -1, i = -1;
+	struct sockaddr_in servaddr;
+	char buf[MAX_LENGTH] = {0};
+	int n = -1;
+	pthread_t tid;
+	pthread_attr_t attr;
+	
+	/* 创建socket s*/
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (-1 == sockfd)
+	{
+		printf("create socket error: %s\n",strerror(errno));
+		return -1;
+	}	
+	
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(SERVER_PORT);
+	inet_pton(AF_INET, "127.0.0.1", &servaddr.sin_addr);
+	ret = connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+	if (-1 == ret)
+	{
+		printf("connect socket error: %s\n",strerror(errno));
+		return -1;
+	}	
+	
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED); //设置分离属性
+	if (pthread_create(&tid, &attr, recevie_user_input, NULL) != 0)
+	{
+		printf("create thread error.\n");
+		return -1;
+	}
+	
+	while(1)
+	{	
+		/* 如果1 == g_iIsSend，表示用户输入的信息已经存到发送缓存sendBuf,需要发送给服务器 */
+		if (1 == g_iIsSend)
+		{
+			n = send(sockfd, sendBuf, strlen(sendBuf), 0);
+			if (n < 0)
+			{
+				printf("send error: %s\n",strerror(errno));
+				break;
+			}
+			g_iIsSend = 0;
+			continue;
+		}
+
+		/* 不断循环检服务器是否发送过来数据，如果有，接受数据，并显示到屏幕上，如果没有立即返回，并跳到while(1)处 */
+		memset(buf, 0, sizeof(buf));
+		//设置为非阻塞MSG_DONTWAIT，如果发生阻塞则返回EAGAIN
+		n = recv(sockfd, buf, sizeof(buf), MSG_DONTWAIT);
+		if ( n < 0)
+		{
+			if(errno == EAGAIN)
+				continue;
+			else
+				break;;	
+		}
+		else if (n == 0) //对端关闭
+		{
+			close(sockfd);
+			sockfd  = -1;
+		}
+
+		/* 1 == g_iWait表示此时客户端没有做任何操作，但是服务器有数据可能，应该是其他客户端发来的消息 */
+		if (1 == g_iWait)
+		{
+			printf("\n");
+			printf("\033[1A"); //先回到上一行  
+         	printf("\033[K");  //清除该行“"please input:”  	
+		}
+		/* 显示完服务器发来的数据，重新显示删除的行“"please input:”*/
+		printf("%s", buf);
+		if (1 == g_iWait)
+		{
+			printf("please input:");
+			fflush(stdout);
+		}
+	}
+	
+	if (sockfd < 0)
+	{
+		close(sockfd);
+		sockfd = -1;
+	}
+	return 0;
+}
+
+/* 处理用户输入的信息 
+ * CTRL + Backspace : 可以一个一个字符删除
+ * CTRL + U: 重新从开始输入 
+ */
+void *recevie_user_input(void *arg)
+{
+	int i = -1;
+	while(1)
+	{
+		/* 设置标准输出不带缓冲，这样不用加"\n"也会即时输出 */
+		//setbuf(stdout, NULL);
+		if (0 == g_iIsSend)
+		{
+			/* 从标准输入读取字符串 */
+			printf("please input:");
+			//把输出缓冲区里的东西打印到标准输出设备,否则，不会立即输出
+			fflush(stdout);
+			g_iWait = 1;
+			memset(sendBuf, 0, sizeof(sendBuf));
+			read(STDIN_FILENO, sendBuf, sizeof(sendBuf));
+			g_iWait = 0; //表示用户发送消息结束
+			/*
+			 * \e[ 或 \033[ 是 CSI，用来操作屏幕的。
+             * \e[K 表示从光标当前位置起删除到 EOL （行尾）
+             * \e[NX 表示将光标往X方向移动N，X = A(上) / B(下) / C(左) / D(右)，\e[1A 就是把光标向上移动1行
+			 */
+			printf("\033[1A"); //先回到上一行  
+         	printf("\033[K");  //清除该行  
+			g_iIsSend = 1;
+		}
+	}
+}
+
+
+```
+三、 代码编译
+
+[root@f8s charroom]# gcc charroom_server_01.c -o charroom_server_01
+
+[root@f8s charroom]# gcc charroom_client_01.c -o charroom_client_01 -lpthread
+
+
+
+四、 实例演示
+
+
+
+1.  开启服务器
+
+[root@f8s charroom]# ./charroom_server_01
+listenSocket = 3
+
+
+2. 第一个客户端
+
+[root@f8s charroom]# ./charroom_client_01
+0 say: hi
+0 say: i'm zhangshan
+1 say: hello
+1 say: my name is lisi.
+0 say: nice to meet you.
+1 say: nice to meet you.
+please input:
+
+
+
+3. 第二个客户端
+
+[root@f8s charroom]# ./charroom_client_01
+1 say: hello
+1 say: my name is lisi.
+0 say: nice to meet you.
+1 say: nice to meet you.
+please input:
