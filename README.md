@@ -35,10 +35,10 @@
 
 ## 五，基于Exynos-4412开发板的嵌入式系统移植以及PWM,LCD驱动开发：
 * 个人负责描述：
-	全部独立完成。
+	参照Exynos手册与华清远见驱动实验手册独立完成。
 * 项目介绍：
 	该项目包括u-boot移植，kernel的裁剪和移植，PWM，LCD，串口驱动均是字符驱动， 设备驱动中引入platform 概念，隔离BSP和驱动。在BSP中定义platform设备和设备使用的资源、设备的具体匹配信息，而在驱动中，只需要通过API去获取资源和数据，做到了板相关代码和驱动代码的分离，使得驱动具有更好的可扩展性和跨平台性。
-	
+* 相关Exynos手册请参照CSDN博客：http://blog.csdn.net/zqixiao_09?viewmode=contents	
 
 
 
