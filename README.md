@@ -22,6 +22,7 @@
 	全部独立完成。
 * 项目描述：
 	该项目基于Linux下C语言编写，使用TCP协议，采用sqlite3作数据库，分客户端、服务器端两部分。用sqlite3操作命令建立数据库。客户端注册、登陆，服务器端检验合法性。 登陆成功后可以查询单词，查询历史记录，返回注册登陆界面，可以退出。
+* 代码链接：https://github.com/cucucucucu/myself/blob/master/dictionary
 
 ## 四，Andriod环境下实现简易App项目：
  * 个人负责描述：
